@@ -1,5 +1,26 @@
 import ts from "npm:typescript";
-import type { ImportContext, SourceFileSymbol } from "./types.ts";
+import type { ResolveContext, SourceFileSymbol } from "./types.ts";
+
+export const validateFilePath = async (path: string) => {
+  try {
+    const stat = await Deno.stat(path);
+    return stat.isFile ? true : false;
+  } catch {
+    return false;
+  }
+};
+
+export const getSourceFileBySpecifier = (params: {
+  specifier: ts.Expression;
+  checker: ts.TypeChecker;
+}) => {
+  const { specifier, checker } = params;
+  const symbol = checker.getSymbolAtLocation(specifier);
+  if (symbol && isSourceFileSymbol(symbol)) {
+    return symbol.valueDeclaration.fileName;
+  }
+  return null;
+};
 
 export const getSymbol = (params: {
   expression: ts.Expression;
@@ -11,7 +32,7 @@ export const getSymbol = (params: {
   try {
     symbol = symbol ? checker.getAliasedSymbol(symbol) : symbol;
   } catch (e) {
-    console.error("[getAliasedSymbol]: ", e);
+    // console.error("[getAliasedSymbol]: ", e);
   }
   return symbol;
 };
@@ -23,16 +44,39 @@ export const formatTypeFlag = (flag: ts.TypeFlags) => {
   )![0] as keyof typeof ts.TypeFlags;
 };
 
-export const getImportContext = (params: {
+export const getResolveContextById = (params: {
+  identifier: ts.Expression;
+  declaration: ts.ImportDeclaration | ts.ExportDeclaration;
+  checker: ts.TypeChecker;
+  isDefaultImport?: boolean;
+}): ResolveContext | null => {
+  const { identifier, checker, declaration, isDefaultImport } = params;
+  const symbol = getSymbol({
+    expression: identifier,
+    checker,
+  });
+  if (!symbol?.valueDeclaration) return null;
+  const contextWithoutIdentifier = getResolveContextBySymbol({
+    symbol,
+    declaration,
+    checker,
+  });
+  return {
+    ...contextWithoutIdentifier,
+    identifier: isDefaultImport ? "default" : identifier.getText(),
+  };
+};
+
+export const getResolveContextBySymbol = (params: {
   symbol: ts.Symbol;
   declaration: ts.ImportDeclaration | ts.ExportDeclaration;
   checker: ts.TypeChecker;
-}): ImportContext => {
-  const { symbol, checker, declaration } = params;
+}): Omit<ResolveContext, "identifier"> => {
+  const { symbol, declaration, checker } = params;
   const commonContext = {
     importer: declaration.getSourceFile().fileName,
     moduleSpecifier: declaration.moduleSpecifier,
-  } as Pick<ImportContext, "moduleSpecifier" | "importer">;
+  } as Pick<ResolveContext, "moduleSpecifier" | "importer" | "identifier">;
 
   const typeObject = checker.getTypeOfSymbol(symbol);
 
@@ -62,13 +106,36 @@ export const isSourceFileSymbol = (
   return !!(declaration && ts.isSourceFile(declaration));
 };
 
+export const groupResolveContext = (
+  ctxArray: ResolveContext[],
+  by: (ctx: ResolveContext) => unknown
+) => {
+  const ret = new Map<unknown, ResolveContext[]>();
+  for (const ctx of ctxArray) {
+    const groupedValue = by(ctx);
+    const groupedCtx = ret.get(groupedValue);
+    if (!groupedCtx) {
+      ret.set(groupedValue, [ctx]);
+    } else {
+      groupedCtx.push(ctx);
+    }
+  }
+  return [...ret.values()];
+};
+
+export const dedupResolveContext = (
+  ctxArray: ResolveContext[],
+  by: (ctx: ResolveContext) => unknown
+) => {
+  return [...new Map(ctxArray.map((ctx) => [by(ctx), ctx])).values()];
+};
+
 export const getExportsofNamespace = (params: {
   symbol: SourceFileSymbol;
   declaration: ts.ImportDeclaration | ts.ExportDeclaration;
   checker: ts.TypeChecker;
-  ctx: ImportContext;
-}) => {
-  const { checker, symbol, declaration, ctx } = params;
+}): ResolveContext[] => {
+  const { checker, symbol, declaration } = params;
   const children = [];
   const exportedSymbols = checker.getExportsOfModule(symbol).filter(
     (item) =>
@@ -77,25 +144,26 @@ export const getExportsofNamespace = (params: {
       !ts.isInterfaceDeclaration(item.declarations?.[0] as ts.Node)
   );
   for (const exportedSymbol of exportedSymbols) {
-    const importContext = getImportContext({
+    const resolveContext = getResolveContextBySymbol({
       symbol: exportedSymbol,
       checker,
       declaration,
     });
-    children.push(importContext);
-    // 2097152 refers to aliased symbol
-    if (exportedSymbol.getFlags() === 2097152) {
-      // handle aliased symbol
-      const aliasedSymbol = checker.getAliasedSymbol(exportedSymbol);
-      if (isSourceFileSymbol(aliasedSymbol)) {
-        getExportsofNamespace({
-          symbol: aliasedSymbol,
-          ctx: importContext,
-          declaration,
-          checker,
-        });
+    if (resolveContext) {
+      children.push(resolveContext);
+      // 2097152 refers to aliased symbol
+      if (exportedSymbol.getFlags() === 2097152) {
+        // handle aliased symbol
+        const aliasedSymbol = checker.getAliasedSymbol(exportedSymbol);
+        if (isSourceFileSymbol(aliasedSymbol)) {
+          resolveContext.children = getExportsofNamespace({
+            symbol: aliasedSymbol,
+            declaration,
+            checker,
+          });
+        }
       }
     }
   }
-  ctx.children = children;
+  return children;
 };

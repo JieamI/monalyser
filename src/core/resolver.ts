@@ -1,21 +1,24 @@
 import ts from "npm:typescript";
-import { getSymbol, getImportContext } from "../utils.ts";
-import type { ImportContext } from "../types.ts";
+import { getResolveContextById } from "../utils.ts";
+import type { ResolveContext } from "../types.ts";
 
 export const resolveImport = (params: {
   declaration: ts.ImportDeclaration;
   checker: ts.TypeChecker;
-}): ImportContext[] => {
+}): ResolveContext[] => {
   const { declaration, checker } = params;
-  const ret: ImportContext[] = [];
+  const ret: ResolveContext[] = [];
   // default import
   const defaultIdentifier = declaration.importClause?.name;
   if (defaultIdentifier) {
-    const symbol = getSymbol({
-      expression: defaultIdentifier,
+    const ctx = getResolveContextById({
+      identifier: defaultIdentifier,
       checker,
+      declaration,
+      isDefaultImport: true,
     });
-    symbol && ret.push(getImportContext({ symbol, checker, declaration }));
+    // identifier should al
+    ctx && ret.push(ctx);
   }
 
   // named import
@@ -24,22 +27,23 @@ export const resolveImport = (params: {
     namedBindings.elements
       .filter((item) => !item.isTypeOnly)
       .forEach((item) => {
-        const namedIdentifier = item.name;
-        const symbol = getSymbol({
-          expression: namedIdentifier,
+        const ctx = getResolveContextById({
+          identifier: item.propertyName ?? item.name,
           checker,
+          declaration,
         });
-        symbol && ret.push(getImportContext({ symbol, checker, declaration }));
+        ctx && ret.push(ctx);
       });
   }
   // namespace import
   if (namedBindings && ts.isNamespaceImport(namedBindings)) {
     const nsIdentifier = namedBindings.name;
-    const symbol = getSymbol({
-      expression: nsIdentifier,
+    const ctx = getResolveContextById({
+      identifier: nsIdentifier,
       checker,
+      declaration,
     });
-    symbol && ret.push(getImportContext({ symbol, checker, declaration }));
+    ctx && ret.push(ctx);
   }
 
   return ret;
@@ -48,62 +52,43 @@ export const resolveImport = (params: {
 export const resolveExport = (params: {
   declaration: ts.ExportDeclaration;
   checker: ts.TypeChecker;
-}): ImportContext[] => {
+}): ResolveContext[] => {
   const { declaration, checker } = params;
-  const ret: ImportContext[] = [];
+  const ret: ResolveContext[] = [];
 
   const exportClause = declaration.exportClause;
 
   if (exportClause) {
     // namespace export
     if (ts.isNamespaceExport(exportClause)) {
-      const symbol = getSymbol({
-        expression: exportClause.name,
+      const ctx = getResolveContextById({
+        identifier: exportClause.name,
         checker,
+        declaration,
       });
-      symbol &&
-        ret.push(
-          getImportContext({
-            symbol,
-            checker,
-            declaration,
-          })
-        );
+      ctx && ret.push(ctx);
     }
 
     if (ts.isNamedExports(exportClause)) {
       exportClause.elements
         .filter((item) => !item.isTypeOnly)
         .forEach((item) => {
-          const symbol = getSymbol({
-            expression: item.name,
+          const ctx = getResolveContextById({
+            identifier: item.propertyName ?? item.name,
             checker,
+            declaration,
           });
-          symbol &&
-            ret.push(
-              getImportContext({
-                symbol,
-                checker,
-                declaration,
-              })
-            );
+          ctx && ret.push(ctx);
         });
     }
   } else {
     // re-export
-    const symbol = getSymbol({
-      expression: declaration.moduleSpecifier!,
+    const ctx = getResolveContextById({
+      identifier: declaration.moduleSpecifier!,
       checker,
+      declaration,
     });
-
-    symbol &&
-      ret.push(
-        getImportContext({
-          symbol,
-          checker,
-          declaration,
-        })
-      );
+    ctx && ret.push(ctx);
   }
 
   return ret;
